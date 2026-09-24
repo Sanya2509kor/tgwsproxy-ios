@@ -118,7 +118,10 @@ struct SettingsView: View {
         bufferKB = "\(cfg.bufferSizeKB)"
         poolSize = "\(cfg.poolSize)"
         verbose = cfg.verbose
-        cfWorkerDomain = cfg.cfWorkerDomain   // <-- ДОБАВЛЕНО
+        cfWorkerDomain = cfg.cfWorkerDomain
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     private func save() {
