@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var proxy: ProxyManager
     @State private var showSettings = false
     @State private var showLink = false
+    @State private var showLogs = false
 
     var body: some View {
         NavigationStack {
@@ -38,6 +39,13 @@ struct ContentView: View {
             .navigationTitle("TG WS Proxy")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showLogs = true
+                    } label: {
+                        Image(systemName: "doc.text.magnifyingglass")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showSettings = true
@@ -46,9 +54,8 @@ struct ContentView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-                    .environmentObject(proxy)
+            .sheet(isPresented: $showLogs) {
+                LogsView()
             }
         }
     }
