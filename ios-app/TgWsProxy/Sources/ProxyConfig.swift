@@ -10,6 +10,7 @@ struct ProxyConfig: Codable {
     var bufferSizeKB: Int = 256
     var poolSize: Int = 4
     var verbose: Bool = false
+    var cfWorkerDomain: String = ""
 
     var bufferSize: Int { bufferSizeKB * 1024 }
 
