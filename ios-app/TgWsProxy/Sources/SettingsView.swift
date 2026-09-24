@@ -46,8 +46,8 @@ struct SettingsView: View {
                 }
 
                 Section("Датацентры (DC → IP)") {
-                    TextEditor(text: $dcLines)
-                        .frame(minHeight: 80)
+                    TextField("4:149.154.167.220", text: $dcLines, axis: .vertical)
+                        .lineLimit(3...6)
                         .monospaced()
                         .font(.system(.caption, design: .monospaced))
                 }
