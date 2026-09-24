@@ -51,6 +51,15 @@ struct SettingsView: View {
                         .font(.system(.caption, design: .monospaced))
                 }
 
+                Section("Cloudflare Worker") {
+                    LabeledContent("Домен") {
+                        TextField("your-worker.workers.dev", text: $cfWorkerDomain)
+                            .multilineTextAlignment(.trailing)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    }
+                }
+
                 Section("Производительность") {
                     LabeledContent("Буфер, КБ") {
                         TextField("256", text: $bufferKB)
