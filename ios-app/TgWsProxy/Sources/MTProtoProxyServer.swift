@@ -160,19 +160,16 @@ final class MTProtoProxyServer {
 
         // Замените его на логику с приоритетом Worker:
         var ws: RawWebSocket? = nil
-        var wsPath = "/apiws"
         
         // 1. Сначала пробуем Cloudflare Worker, если он настроен
-        if !config.cfWorkerDomain.isEmpty {
-            logger.info("DC\(result.dcId)\(mediaTag) -> trying CF worker \(config.cfWorkerDomain) for \(targetIP)")
+        if !self.config.cfWorkerDomain.isEmpty {
+            let workerDomain = self.config.cfWorkerDomain
+            logger.info("DC\(result.dcId)\(mediaTag) -> trying CF worker \(workerDomain) for \(targetIP)")
             do {
-                // URL для Worker: wss://<worker-domain>/apiws?dst=<target-ip>
-                // Важно: для Worker путь всегда /apiws, а целевой IP передаётся в параметре dst
                 let workerPath = "/apiws?dst=\(targetIP)"
-                ws = try await RawWebSocket.connect(ip: config.cfWorkerDomain, domain: config.cfWorkerDomain, path: workerPath, timeout: 10)
+                ws = try await RawWebSocket.connect(ip: workerDomain, domain: workerDomain, path: workerPath, timeout: 10)
             } catch {
                 logger.warning("DC\(result.dcId)\(mediaTag) CF worker failed: \(error)")
-                // Если Worker не сработал, идём дальше (к прямому WS)
             }
         }
         
