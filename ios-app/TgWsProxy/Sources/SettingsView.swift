@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var bufferKB: String = ""
     @State private var poolSize: String = ""
     @State private var verbose: Bool = false
+    @State private var cfWorkerDomain: String = ""   // <-- ДОБАВЛЕНО
     @State private var showError: String? = nil
 
     var body: some View {
@@ -117,6 +118,7 @@ struct SettingsView: View {
         bufferKB = "\(cfg.bufferSizeKB)"
         poolSize = "\(cfg.poolSize)"
         verbose = cfg.verbose
+        cfWorkerDomain = cfg.cfWorkerDomain   // <-- ДОБАВЛЕНО
     }
 
     private func save() {
@@ -149,6 +151,7 @@ struct SettingsView: View {
         cfg.bufferSizeKB = Int(bufferKB) ?? 256
         cfg.poolSize = Int(poolSize) ?? 4
         cfg.verbose = verbose
+        cfg.cfWorkerDomain = cfWorkerDomain.trimmingCharacters(in: .whitespaces)   // <-- ДОБАВЛЕНО
 
         proxy.config = cfg
         proxy.saveConfig()
