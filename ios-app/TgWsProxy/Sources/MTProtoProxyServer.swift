@@ -158,23 +158,42 @@ final class MTProtoProxyServer {
             return
         }
 
-        let domains = wsDomains(dc: result.dcId, isMedia: result.isMedia, overrides: config.dcOverrides)
-
+        // Замените его на логику с приоритетом Worker:
         var ws: RawWebSocket? = nil
-        for domain in domains {
-            logger.info("DC\(result.dcId)\(mediaTag) -> wss://\(domain)/apiws via \(targetIP)")
+        var wsPath = "/apiws"
+        
+        // 1. Сначала пробуем Cloudflare Worker, если он настроен
+        if !config.cfWorkerDomain.isEmpty {
+            logger.info("DC\(result.dcId)\(mediaTag) -> trying CF worker \(config.cfWorkerDomain) for \(targetIP)")
             do {
-                ws = try await RawWebSocket.connect(ip: targetIP, domain: domain, timeout: 10)
-                break
-            } catch let error as WsHandshakeError where error.isRedirect {
-                logger.warning("DC\(result.dcId)\(mediaTag) got \(error.statusCode) redirect")
-                continue
+                // URL для Worker: wss://<worker-domain>/apiws?dst=<target-ip>
+                // Важно: для Worker путь всегда /apiws, а целевой IP передаётся в параметре dst
+                let workerPath = "/apiws?dst=\(targetIP)"
+                ws = try await RawWebSocket.connect(ip: config.cfWorkerDomain, domain: config.cfWorkerDomain, path: workerPath, timeout: 10)
             } catch {
-                await statsActor.update { $0.wsErrors += 1 }
-                logger.warning("DC\(result.dcId)\(mediaTag) WS connect failed: \(error)")
+                logger.warning("DC\(result.dcId)\(mediaTag) CF worker failed: \(error)")
+                // Если Worker не сработал, идём дальше (к прямому WS)
             }
         }
-
+        
+        // 2. Если Worker не настроен или не сработал, пробуем прямой WS (старая логика)
+        if ws == nil {
+            let domains = wsDomains(dc: result.dcId, isMedia: result.isMedia, overrides: config.dcOverrides)
+            for domain in domains {
+                logger.info("DC\(result.dcId)\(mediaTag) -> wss://\(domain)/apiws via \(targetIP)")
+                do {
+                    ws = try await RawWebSocket.connect(ip: targetIP, domain: domain, timeout: 10)
+                    break
+                } catch let error as WsHandshakeError where error.isRedirect {
+                    logger.warning("DC\(result.dcId)\(mediaTag) got \(error.statusCode) redirect")
+                    continue
+                } catch {
+                    logger.warning("DC\(result.dcId)\(mediaTag) WS connect failed: \(error)")
+                }
+            }
+        }
+        
+        // 3. Если ничего не помогло, делаем TCP fallback
         guard let activeWS = ws else {
             // WS failed — TCP fallback
             let fallbackIP = ProxyConfig.dcDefaultIPs[result.dcId] ?? targetIP
