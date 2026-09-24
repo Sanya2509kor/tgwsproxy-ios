@@ -42,6 +42,8 @@ jobs:
             TgWsProxy/Sources/MTProtoHandshake.swift
             TgWsProxy/Sources/MTProtoProxyServer.swift
             TgWsProxy/Sources/LiveActivityManager.swift
+            TgWsProxy/Sources/LogStore.swift
+            TgWsProxy/Sources/LogsView.swift
           )
 
           echo "Compiling ${#SOURCES[@]} Swift files..."
