@@ -10,18 +10,15 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Status header
                 statusHeader
                     .padding(.bottom, 16)
 
-                // Stats card
                 if proxy.isRunning {
                     statsCard
                         .padding(.horizontal, 16)
                         .padding(.bottom, 12)
                 }
 
-                // Connect info
                 if proxy.isRunning {
                     connectCard
                         .padding(.horizontal, 16)
@@ -30,7 +27,6 @@ struct ContentView: View {
 
                 Spacer()
 
-                // Start/Stop button
                 startStopButton
                     .padding(.horizontal, 16)
                     .padding(.bottom, 24)
@@ -56,6 +52,10 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showLogs) {
                 LogsView()
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+                    .environmentObject(proxy)
             }
         }
     }
