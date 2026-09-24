@@ -36,13 +36,13 @@ final class MTProtoProxyServer {
                 case .ready:
                     self?.listener?.stateUpdateHandler = nil
                     Task { @MainActor in
-                        LogStore.shared.log("Proxy listening on port \(self?.config.port ?? 0)", tag: "SERVER")  // ← LOG
+                        LogStore.shared.log("Proxy listening on port \(self?.config.port ?? 0)", tag: "SERVER")
                     }
                     cont.resume()
                 case .failed(let error):
                     self?.listener?.stateUpdateHandler = nil
                     Task { @MainActor in
-                        LogStore.shared.log("Listener failed: \(error)", tag: "SERVER")  // ← LOG
+                        LogStore.shared.log("Listener failed: \(error)", tag: "SERVER")
                     }
                     cont.resume(throwing: error)
                 case .cancelled:
@@ -75,24 +75,30 @@ final class MTProtoProxyServer {
         await statsActor.update { $0.connectionsTotal += 1 }
         await statsActor.update { $0.connectionsActive += 1 }
         Task { @MainActor in
-            LogStore.shared.log("New client connection", tag: "SERVER")  // ← LOG
+            LogStore.shared.log("New client connection", tag: "SERVER")
+        }
+
+        defer {
+            Task {
+                await statsActor.update { $0.connectionsActive -= 1 }
+            }
+            if connection.state != .cancelled {
+                connection.cancel()
+            }
         }
 
         do {
             try await processClient(connection)
         } catch {
             Task { @MainActor in
-                LogStore.shared.log("Client error: \(error)", tag: "SERVER")  // ← LOG
+                LogStore.shared.log("Client error: \(error)", tag: "SERVER")
             }
         }
-        await statsActor.update { $0.connectionsActive -= 1 }
-        connection.cancel()
     }
 
     private func processClient(_ connection: NWConnection) async throws {
         try await waitForReady(connection)
 
-        // Читаем handshake
         let handshakeData = try await receiveExact(connection, count: HANDSHAKE_LEN)
         let handshake = [UInt8](handshakeData)
 
@@ -100,7 +106,7 @@ final class MTProtoProxyServer {
         guard let result = tryHandshake(handshake, secret: secretBytes) else {
             await statsActor.update { $0.connectionsBad += 1 }
             Task { @MainActor in
-                LogStore.shared.log("Bad handshake (wrong secret)", tag: "SERVER")  // ← LOG
+                LogStore.shared.log("Bad handshake (wrong secret)", tag: "SERVER")
             }
             _ = try? await receiveData(connection, maxLength: 4096)
             return
@@ -131,13 +137,13 @@ final class MTProtoProxyServer {
 
         let mediaTag = result.isMedia ? "m" : ""
         Task { @MainActor in
-            LogStore.shared.log("Handshake OK: DC\(result.dcId)\(mediaTag)", tag: "MT")  // ← LOG
+            LogStore.shared.log("Handshake OK: DC\(result.dcId)\(mediaTag)", tag: "MT")
         }
 
         guard let targetIP = config.dcRedirects[result.dcId] else {
             if let fallbackIP = ProxyConfig.dcDefaultIPs[result.dcId] {
                 Task { @MainActor in
-                    LogStore.shared.log("DC\(result.dcId) not in config → TCP fallback \(fallbackIP)", tag: "MT")  // ← LOG
+                    LogStore.shared.log("DC\(result.dcId) not in config → TCP fallback \(fallbackIP)", tag: "MT")
                 }
                 try await tcpFallback(
                     connection: connection, dst: fallbackIP, port: 443,
@@ -155,17 +161,17 @@ final class MTProtoProxyServer {
         if !self.config.cfWorkerDomain.isEmpty {
             let workerDomain = self.config.cfWorkerDomain
             Task { @MainActor in
-                LogStore.shared.log("DC\(result.dcId)\(mediaTag) → trying Worker \(workerDomain) for \(targetIP)", tag: "WORKER")  // ← LOG
+                LogStore.shared.log("DC\(result.dcId)\(mediaTag) → trying Worker \(workerDomain) for \(targetIP)", tag: "WORKER")
             }
             do {
                 let workerPath = "/apiws?dst=\(targetIP)&dc=\(result.dcId)"
                 ws = try await RawWebSocket.connect(ip: workerDomain, domain: workerDomain, path: workerPath, timeout: 15)
                 Task { @MainActor in
-                    LogStore.shared.log("Worker connected for DC\(result.dcId)", tag: "WORKER")  // ← LOG
+                    LogStore.shared.log("Worker connected for DC\(result.dcId)", tag: "WORKER")
                 }
             } catch {
                 Task { @MainActor in
-                    LogStore.shared.log("Worker failed: \(error)", tag: "WORKER")  // ← LOG
+                    LogStore.shared.log("Worker failed: \(error)", tag: "WORKER")
                 }
             }
         }
@@ -175,14 +181,14 @@ final class MTProtoProxyServer {
             let domains = wsDomains(dc: result.dcId, isMedia: result.isMedia, overrides: config.dcOverrides)
             for domain in domains {
                 Task { @MainActor in
-                    LogStore.shared.log("Trying direct WS wss://\(domain)/apiws", tag: "WS")  // ← LOG
+                    LogStore.shared.log("Trying direct WS wss://\(domain)/apiws", tag: "WS")
                 }
                 do {
                     ws = try await RawWebSocket.connect(ip: targetIP, domain: domain, timeout: 10)
                     break
                 } catch {
                     Task { @MainActor in
-                        LogStore.shared.log("Direct WS failed: \(error)", tag: "WS")  // ← LOG
+                        LogStore.shared.log("Direct WS failed: \(error)", tag: "WS")
                     }
                 }
             }
@@ -192,7 +198,7 @@ final class MTProtoProxyServer {
         guard let activeWS = ws else {
             let fallbackIP = ProxyConfig.dcDefaultIPs[result.dcId] ?? targetIP
             Task { @MainActor in
-                LogStore.shared.log("WS failed → TCP fallback \(fallbackIP)", tag: "TCP")  // ← LOG
+                LogStore.shared.log("WS failed → TCP fallback \(fallbackIP)", tag: "TCP")
             }
             try await tcpFallback(
                 connection: connection, dst: fallbackIP, port: 443,
@@ -205,7 +211,7 @@ final class MTProtoProxyServer {
 
         await statsActor.update { $0.connectionsWS += 1 }
         Task { @MainActor in
-            LogStore.shared.log("Bridge started for DC\(result.dcId)", tag: "BRIDGE")  // ← LOG
+            LogStore.shared.log("Bridge started for DC\(result.dcId)", tag: "BRIDGE")
         }
 
         let splitter = MsgSplitter(relayInit: relayInit, protoInt: result.protoInt)
@@ -219,8 +225,6 @@ final class MTProtoProxyServer {
         )
     }
 
-    // ... остальные методы (bridgeWSReencrypt, tcpFallback, waitForReady и т.д.) оставьте как были
-
     // MARK: - Bridge WS
 
     private func bridgeWSReencrypt(
@@ -230,22 +234,17 @@ final class MTProtoProxyServer {
         splitter: MsgSplitter
     ) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
-            // TCP -> WS (client to Telegram)
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
                     while true {
                         let chunk = try await self.receiveData(connection, maxLength: 65536)
                         guard !chunk.isEmpty else { break }
-
                         await self.statsActor.update { $0.bytesUp += UInt64(chunk.count) }
-
                         let plain = cltDecryptor.process(chunk)
                         let encrypted = tgEncryptor.process(plain)
-
                         let parts = splitter.split(encrypted)
                         if parts.isEmpty { continue }
-
                         if parts.count > 1 {
                             try await ws.sendBatch(parts)
                         } else {
@@ -253,33 +252,29 @@ final class MTProtoProxyServer {
                         }
                     }
                 } catch {
-                    // Connection closed
+                    // Соединение закрылось — это нормально
                 }
                 await ws.close()
             }
 
-            // WS -> TCP (Telegram to client)
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
                     while true {
                         guard let data = try await ws.recv() else { break }
-
                         await self.statsActor.update { $0.bytesDown += UInt64(data.count) }
-
                         let plain = tgDecryptor.process(data)
                         let encrypted = cltEncryptor.process(plain)
-
                         try await self.sendData(connection, data: encrypted)
                     }
                 } catch {
-                    // Connection closed
+                    // Соединение закрылось — это нормально
                 }
-                connection.cancel()
+                // connection.cancel() убран — закроется в handleNewConnection
             }
 
-            // Ждём завершения ОБОИХ направлений, а не первого из них
-            try await group.waitForAll()
+            // Ждём завершения ОБОИХ направлений, игнорируя ошибки
+            try? await group.waitForAll()
         }
     }
 
@@ -304,14 +299,11 @@ final class MTProtoProxyServer {
 
         try await waitForReady(remote)
 
-        // Send relay init
         try await sendData(remote, data: Data(relayInit))
 
         await statsActor.update { $0.connectionsTCPFallback += 1 }
 
-        // Bridge TCP <-> TCP with re-encryption
         try await withThrowingTaskGroup(of: Void.self) { group in
-            // Client -> Remote
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
@@ -324,10 +316,9 @@ final class MTProtoProxyServer {
                         try await self.sendData(remote, data: enc)
                     }
                 } catch {}
-                remote.cancel()
+                // remote.cancel() убран
             }
 
-            // Remote -> Client
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
@@ -340,11 +331,16 @@ final class MTProtoProxyServer {
                         try await self.sendData(connection, data: enc)
                     }
                 } catch {}
-                connection.cancel()
+                // connection.cancel() убран
             }
 
-            // Ждём завершения ОБОИХ направлений
-            try await group.waitForAll()
+            // Игнорируем ошибки, чтобы не пробрасывать наружу
+            try? await group.waitForAll()
+        }
+
+        // Закрываем remote после завершения моста (безопасно)
+        if remote.state != .cancelled {
+            remote.cancel()
         }
     }
 
@@ -434,11 +430,11 @@ func hexToBytes(_ hex: String) -> [UInt8] {
 @available(iOS 17.0, *)
 actor StatsActor {
     private var stats = ProxyStats()
-    
+
     func getStats() -> ProxyStats {
         return stats
     }
-    
+
     func update(_ update: (inout ProxyStats) -> Void) {
         update(&stats)
     }
