@@ -52,6 +52,8 @@ SWIFT_FILES=(
     "$SOURCES_DIR/MTProtoHandshake.swift"
     "$SOURCES_DIR/MTProtoProxyServer.swift"
     "$SOURCES_DIR/LiveActivityManager.swift"
+    "$SOURCES_DIR/LogStore.swift"      # ← добавили
+    "$SOURCES_DIR/LogsView.swift"      # ← добавили
 )
 
 echo "Compiling ${#SWIFT_FILES[@]} Swift files..."
