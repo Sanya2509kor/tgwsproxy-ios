@@ -78,15 +78,6 @@ final class MTProtoProxyServer {
             LogStore.shared.log("New client connection", tag: "SERVER")
         }
 
-        defer {
-            Task {
-                await statsActor.update { $0.connectionsActive -= 1 }
-            }
-            if connection.state != .cancelled {
-                connection.cancel()
-            }
-        }
-
         do {
             try await processClient(connection)
         } catch {
@@ -94,6 +85,10 @@ final class MTProtoProxyServer {
                 LogStore.shared.log("Client error: \(error)", tag: "SERVER")
             }
         }
+
+        // Сначала уменьшаем счётчик, потом закрываем соединение
+        await statsActor.update { $0.connectionsActive -= 1 }
+        connection.cancel()
     }
 
     private func processClient(_ connection: NWConnection) async throws {
@@ -234,6 +229,7 @@ final class MTProtoProxyServer {
         splitter: MsgSplitter
     ) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
+            // Направление TCP → WS (от Telegram к Worker'у)
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
@@ -257,6 +253,10 @@ final class MTProtoProxyServer {
                 await ws.close()
             }
 
+            // Направление WS → TCP (от Worker'а к Telegram)
+            // ВАЖНО: здесь читаем ТОЛЬКО из ws и пишем в connection.
+            // Никаких receiveData(connection, ...) здесь быть не должно —
+            // это вызывало гонку чтений и краш приложения.
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
@@ -270,7 +270,7 @@ final class MTProtoProxyServer {
                 } catch {
                     // Соединение закрылось — это нормально
                 }
-                // connection.cancel() убран — закроется в handleNewConnection
+                await ws.close()
             }
 
             // Ждём завершения ОБОИХ направлений, игнорируя ошибки
@@ -304,6 +304,7 @@ final class MTProtoProxyServer {
         await statsActor.update { $0.connectionsTCPFallback += 1 }
 
         try await withThrowingTaskGroup(of: Void.self) { group in
+            // Направление client → remote
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
@@ -316,9 +317,9 @@ final class MTProtoProxyServer {
                         try await self.sendData(remote, data: enc)
                     }
                 } catch {}
-                // remote.cancel() убран
             }
 
+            // Направление remote → client
             group.addTask { [weak self] in
                 guard let self else { return }
                 do {
@@ -331,14 +332,11 @@ final class MTProtoProxyServer {
                         try await self.sendData(connection, data: enc)
                     }
                 } catch {}
-                // connection.cancel() убран
             }
 
-            // Игнорируем ошибки, чтобы не пробрасывать наружу
             try? await group.waitForAll()
         }
 
-        // Закрываем remote после завершения моста (безопасно)
         if remote.state != .cancelled {
             remote.cancel()
         }
