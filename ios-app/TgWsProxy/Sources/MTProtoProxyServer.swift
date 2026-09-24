@@ -158,22 +158,23 @@ final class MTProtoProxyServer {
             return
         }
 
-        // Замените его на логику с приоритетом Worker:
+        // Логика с приоритетом Worker:
         var ws: RawWebSocket? = nil
-        
+
         // 1. Сначала пробуем Cloudflare Worker, если он настроен
         if !self.config.cfWorkerDomain.isEmpty {
             let workerDomain = self.config.cfWorkerDomain
             logger.info("DC\(result.dcId)\(mediaTag) -> trying CF worker \(workerDomain) for \(targetIP)")
             do {
-                let workerPath = "/apiws?dst=\(targetIP)"
-                ws = try await RawWebSocket.connect(ip: workerDomain, domain: workerDomain, path: workerPath, timeout: 10)
+                // ВАЖНО: передаём и dst (IP), и dc (номер датацентра) — Worker без dc не знает, к какому DC подключаться
+                let workerPath = "/apiws?dst=\(targetIP)&dc=\(result.dcId)"
+                ws = try await RawWebSocket.connect(ip: workerDomain, domain: workerDomain, path: workerPath, timeout: 15)
             } catch {
                 logger.warning("DC\(result.dcId)\(mediaTag) CF worker failed: \(error)")
             }
         }
-        
-        // 2. Если Worker не настроен или не сработал, пробуем прямой WS (старая логика)
+
+        // 2. Если Worker не настроен или не сработал, пробуем прямой WS
         if ws == nil {
             let domains = wsDomains(dc: result.dcId, isMedia: result.isMedia, overrides: config.dcOverrides)
             for domain in domains {
@@ -189,10 +190,9 @@ final class MTProtoProxyServer {
                 }
             }
         }
-        
+
         // 3. Если ничего не помогло, делаем TCP fallback
         guard let activeWS = ws else {
-            // WS failed — TCP fallback
             let fallbackIP = ProxyConfig.dcDefaultIPs[result.dcId] ?? targetIP
             logger.info("DC\(result.dcId)\(mediaTag) WS failed, TCP fallback to \(fallbackIP):443")
             try await tcpFallback(
@@ -278,9 +278,8 @@ final class MTProtoProxyServer {
                 connection.cancel()
             }
 
-            // Wait for either direction to finish
-            try await group.next()
-            group.cancelAll()
+            // Ждём завершения ОБОИХ направлений, а не первого из них
+            try await group.waitForAll()
         }
     }
 
@@ -344,8 +343,8 @@ final class MTProtoProxyServer {
                 connection.cancel()
             }
 
-            try await group.next()
-            group.cancelAll()
+            // Ждём завершения ОБОИХ направлений
+            try await group.waitForAll()
         }
     }
 
