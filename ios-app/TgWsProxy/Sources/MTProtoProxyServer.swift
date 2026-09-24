@@ -4,8 +4,6 @@ import os.log
 
 private let logger = Logger(subsystem: "com.tgwsproxy.app", category: "ProxyServer")
 
-// MARK: - MTProto Proxy Server
-
 @available(iOS 17.0, *)
 final class MTProtoProxyServer {
     private let config: ProxyConfig
@@ -29,9 +27,7 @@ final class MTProtoProxyServer {
 
         listener?.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
-            Task {
-                await self.handleNewConnection(connection)
-            }
+            Task { await self.handleNewConnection(connection) }
         }
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -39,18 +35,19 @@ final class MTProtoProxyServer {
                 switch state {
                 case .ready:
                     self?.listener?.stateUpdateHandler = nil
-                    logger.info("Proxy server listening on port \(self?.config.port ?? 0)")
+                    Task { @MainActor in
+                        LogStore.shared.log("Proxy listening on port \(self?.config.port ?? 0)", tag: "SERVER")  // ← LOG
+                    }
                     cont.resume()
-
                 case .failed(let error):
                     self?.listener?.stateUpdateHandler = nil
-                    logger.error("Listener failed: \(error)")
+                    Task { @MainActor in
+                        LogStore.shared.log("Listener failed: \(error)", tag: "SERVER")  // ← LOG
+                    }
                     cont.resume(throwing: error)
-
                 case .cancelled:
                     self?.listener?.stateUpdateHandler = nil
                     cont.resume(throwing: CancellationError())
-
                 default:
                     break
                 }
@@ -58,7 +55,7 @@ final class MTProtoProxyServer {
             listener?.start(queue: DispatchQueue.global(qos: .userInitiated))
         }
 
-        // Start periodic stats reporting
+        // Периодическая статистика
         Task {
             while listener != nil {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -73,37 +70,38 @@ final class MTProtoProxyServer {
         listener = nil
     }
 
-    // MARK: - Connection handling
-
     private func handleNewConnection(_ connection: NWConnection) async {
         connection.start(queue: DispatchQueue.global(qos: .userInitiated))
-
         await statsActor.update { $0.connectionsTotal += 1 }
         await statsActor.update { $0.connectionsActive += 1 }
+        Task { @MainActor in
+            LogStore.shared.log("New client connection", tag: "SERVER")  // ← LOG
+        }
 
         do {
             try await processClient(connection)
         } catch {
-            logger.debug("Client connection error: \(error)")
+            Task { @MainActor in
+                LogStore.shared.log("Client error: \(error)", tag: "SERVER")  // ← LOG
+            }
         }
-        
         await statsActor.update { $0.connectionsActive -= 1 }
         connection.cancel()
     }
 
     private func processClient(_ connection: NWConnection) async throws {
-        // Wait for connection ready
         try await waitForReady(connection)
 
-        // Read 64-byte handshake
+        // Читаем handshake
         let handshakeData = try await receiveExact(connection, count: HANDSHAKE_LEN)
         let handshake = [UInt8](handshakeData)
 
         let secretBytes = hexToBytes(config.secret)
         guard let result = tryHandshake(handshake, secret: secretBytes) else {
             await statsActor.update { $0.connectionsBad += 1 }
-            logger.debug("Bad handshake (wrong secret or proto)")
-            // Drain remaining data to look like a normal connection
+            Task { @MainActor in
+                LogStore.shared.log("Bad handshake (wrong secret)", tag: "SERVER")  // ← LOG
+            }
             _ = try? await receiveData(connection, maxLength: 4096)
             return
         }
@@ -111,90 +109,91 @@ final class MTProtoProxyServer {
         let dcIdx = result.isMedia ? -result.dcId : result.dcId
         let relayInit = generateRelayInit(protoTag: result.protoTag, dcIdx: dcIdx)
 
-        // Build client cipher pair (decrypt from client, encrypt to client)
         let cltDecPrekey = Array(result.clientDecPrekeyIV[0..<PREKEY_LEN])
         let cltDecIV = Array(result.clientDecPrekeyIV[PREKEY_LEN...])
         let cltDecKey = sha256(cltDecPrekey + secretBytes)
-
         let cltEncPrekeyIV = Array(result.clientDecPrekeyIV.reversed())
         let cltEncKey = sha256(Array(cltEncPrekeyIV[0..<PREKEY_LEN]) + secretBytes)
         let cltEncIV = Array(cltEncPrekeyIV[PREKEY_LEN...])
 
         let cltDecryptor = AESCTR(key: cltDecKey, iv: cltDecIV)
         let cltEncryptor = AESCTR(key: cltEncKey, iv: cltEncIV)
-
-        // Fast-forward past 64-byte init
         _ = cltDecryptor.process(ZERO_64)
 
-        // Relay side: standard obfuscation (no secret hash)
         let relayEncKey = Array(relayInit[SKIP_LEN ..< SKIP_LEN + PREKEY_LEN])
         let relayEncIV = Array(relayInit[SKIP_LEN + PREKEY_LEN ..< SKIP_LEN + PREKEY_LEN + IV_LEN])
-
         let relayDecPrekeyIV = Array(relayInit[SKIP_LEN ..< SKIP_LEN + PREKEY_LEN + IV_LEN].reversed())
         let relayDecKey = Array(relayDecPrekeyIV[0..<KEY_LEN])
         let relayDecIV = Array(relayDecPrekeyIV[KEY_LEN...])
-
         let tgEncryptor = AESCTR(key: relayEncKey, iv: relayEncIV)
         let tgDecryptor = AESCTR(key: relayDecKey, iv: relayDecIV)
         _ = tgEncryptor.process(ZERO_64)
 
-        // Try connecting via WebSocket
         let mediaTag = result.isMedia ? "m" : ""
-        logger.info("Handshake ok: DC\(result.dcId)\(mediaTag)")
+        Task { @MainActor in
+            LogStore.shared.log("Handshake OK: DC\(result.dcId)\(mediaTag)", tag: "MT")  // ← LOG
+        }
 
         guard let targetIP = config.dcRedirects[result.dcId] else {
-            // DC not in config — try TCP fallback
             if let fallbackIP = ProxyConfig.dcDefaultIPs[result.dcId] {
-                logger.info("DC\(result.dcId) not in config, TCP fallback to \(fallbackIP):443")
+                Task { @MainActor in
+                    LogStore.shared.log("DC\(result.dcId) not in config → TCP fallback \(fallbackIP)", tag: "MT")  // ← LOG
+                }
                 try await tcpFallback(
                     connection: connection, dst: fallbackIP, port: 443,
                     relayInit: relayInit,
                     cltDecryptor: cltDecryptor, cltEncryptor: cltEncryptor,
                     tgEncryptor: tgEncryptor, tgDecryptor: tgDecryptor
                 )
-            } else {
-                logger.warning("DC\(result.dcId) — no fallback available")
             }
             return
         }
 
-        // Логика с приоритетом Worker:
         var ws: RawWebSocket? = nil
 
-        // 1. Сначала пробуем Cloudflare Worker, если он настроен
+        // 1. Cloudflare Worker
         if !self.config.cfWorkerDomain.isEmpty {
             let workerDomain = self.config.cfWorkerDomain
-            logger.info("DC\(result.dcId)\(mediaTag) -> trying CF worker \(workerDomain) for \(targetIP)")
+            Task { @MainActor in
+                LogStore.shared.log("DC\(result.dcId)\(mediaTag) → trying Worker \(workerDomain) for \(targetIP)", tag: "WORKER")  // ← LOG
+            }
             do {
-                // ВАЖНО: передаём и dst (IP), и dc (номер датацентра) — Worker без dc не знает, к какому DC подключаться
                 let workerPath = "/apiws?dst=\(targetIP)&dc=\(result.dcId)"
                 ws = try await RawWebSocket.connect(ip: workerDomain, domain: workerDomain, path: workerPath, timeout: 15)
+                Task { @MainActor in
+                    LogStore.shared.log("Worker connected for DC\(result.dcId)", tag: "WORKER")  // ← LOG
+                }
             } catch {
-                logger.warning("DC\(result.dcId)\(mediaTag) CF worker failed: \(error)")
-            }
-        }
-
-        // 2. Если Worker не настроен или не сработал, пробуем прямой WS
-        if ws == nil {
-            let domains = wsDomains(dc: result.dcId, isMedia: result.isMedia, overrides: config.dcOverrides)
-            for domain in domains {
-                logger.info("DC\(result.dcId)\(mediaTag) -> wss://\(domain)/apiws via \(targetIP)")
-                do {
-                    ws = try await RawWebSocket.connect(ip: targetIP, domain: domain, timeout: 10)
-                    break
-                } catch let error as WsHandshakeError where error.isRedirect {
-                    logger.warning("DC\(result.dcId)\(mediaTag) got \(error.statusCode) redirect")
-                    continue
-                } catch {
-                    logger.warning("DC\(result.dcId)\(mediaTag) WS connect failed: \(error)")
+                Task { @MainActor in
+                    LogStore.shared.log("Worker failed: \(error)", tag: "WORKER")  // ← LOG
                 }
             }
         }
 
-        // 3. Если ничего не помогло, делаем TCP fallback
+        // 2. Прямой WS
+        if ws == nil {
+            let domains = wsDomains(dc: result.dcId, isMedia: result.isMedia, overrides: config.dcOverrides)
+            for domain in domains {
+                Task { @MainActor in
+                    LogStore.shared.log("Trying direct WS wss://\(domain)/apiws", tag: "WS")  // ← LOG
+                }
+                do {
+                    ws = try await RawWebSocket.connect(ip: targetIP, domain: domain, timeout: 10)
+                    break
+                } catch {
+                    Task { @MainActor in
+                        LogStore.shared.log("Direct WS failed: \(error)", tag: "WS")  // ← LOG
+                    }
+                }
+            }
+        }
+
+        // 3. TCP fallback
         guard let activeWS = ws else {
             let fallbackIP = ProxyConfig.dcDefaultIPs[result.dcId] ?? targetIP
-            logger.info("DC\(result.dcId)\(mediaTag) WS failed, TCP fallback to \(fallbackIP):443")
+            Task { @MainActor in
+                LogStore.shared.log("WS failed → TCP fallback \(fallbackIP)", tag: "TCP")  // ← LOG
+            }
             try await tcpFallback(
                 connection: connection, dst: fallbackIP, port: 443,
                 relayInit: relayInit,
@@ -205,14 +204,13 @@ final class MTProtoProxyServer {
         }
 
         await statsActor.update { $0.connectionsWS += 1 }
+        Task { @MainActor in
+            LogStore.shared.log("Bridge started for DC\(result.dcId)", tag: "BRIDGE")  // ← LOG
+        }
 
-        // Build splitter
         let splitter = MsgSplitter(relayInit: relayInit, protoInt: result.protoInt)
-
-        // Send relay init to Telegram
         try await activeWS.send(Data(relayInit))
 
-        // Bridge: client TCP <-> Telegram WS with re-encryption
         try await bridgeWSReencrypt(
             connection: connection, ws: activeWS,
             cltDecryptor: cltDecryptor, cltEncryptor: cltEncryptor,
@@ -220,6 +218,8 @@ final class MTProtoProxyServer {
             splitter: splitter
         )
     }
+
+    // ... остальные методы (bridgeWSReencrypt, tcpFallback, waitForReady и т.д.) оставьте как были
 
     // MARK: - Bridge WS
 
